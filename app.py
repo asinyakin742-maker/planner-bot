@@ -6,6 +6,10 @@ import os
 app = FastAPI()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
+TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
+TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
 
@@ -16,6 +20,17 @@ def send_telegram_message(chat_id: int, text: str):
         "text": text
     }
     requests.post(url, json=payload)
+
+
+def create_trello_card(title: str):
+    url = "https://api.trello.com/1/cards"
+    query = {
+        "key": TRELLO_API_KEY,
+        "token": TRELLO_TOKEN,
+        "idList": TRELLO_LIST_ID,
+        "name": title
+    }
+    requests.post(url, params=query)
 
 
 @app.get("/")
@@ -34,6 +49,17 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
 
-    send_telegram_message(chat_id, f"Бот работает 🚀\nТы написал: {text}")
+    # 🔥 простая логика
+    if text.lower().startswith("создай задачу"):
+        task_title = text.replace("создай задачу", "").strip()
+
+        if not task_title:
+            send_telegram_message(chat_id, "Напиши название задачи после команды")
+        else:
+            create_trello_card(task_title)
+            send_telegram_message(chat_id, f"Задача создана: {task_title}")
+
+    else:
+        send_telegram_message(chat_id, f"Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
 
     return JSONResponse({"ok": True})
