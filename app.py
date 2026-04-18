@@ -30,7 +30,8 @@ def create_trello_card(title: str):
         "idList": TRELLO_LIST_ID,
         "name": title
     }
-    requests.post(url, params=query)
+    response = requests.post(url, params=query)
+    return response.status_code, response.text
 
 
 @app.get("/")
@@ -49,17 +50,23 @@ async def telegram_webhook(request: Request):
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
 
-    # 🔥 простая логика
     if text.lower().startswith("создай задачу"):
         task_title = text.replace("создай задачу", "").strip()
 
         if not task_title:
             send_telegram_message(chat_id, "Напиши название задачи после команды")
         else:
-            create_trello_card(task_title)
-            send_telegram_message(chat_id, f"Задача создана: {task_title}")
+            status_code, response_text = create_trello_card(task_title)
+
+            if status_code == 200:
+                send_telegram_message(chat_id, f"Задача создана: {task_title}")
+            else:
+                send_telegram_message(
+                    chat_id,
+                    f"Не удалось создать задачу.\nКод: {status_code}\nОтвет Trello: {response_text}"
+                )
 
     else:
-        send_telegram_message(chat_id, f"Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
+        send_telegram_message(chat_id, "Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
 
     return JSONResponse({"ok": True})
