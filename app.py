@@ -66,13 +66,10 @@ async def telegram_webhook(request: Request):
                     chat_id,
                     f"Не удалось создать задачу.\nКод: {status_code}\nОтвет Trello: {response_text}"
                 )
-
     else:
-        send_telegram_message(chat_id, "Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
-
-    return JSONResponse({"ok": True})
-
-    else:
-        send_telegram_message(chat_id, "Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
+        send_telegram_message(
+            chat_id,
+            "Пока умею создавать задачи 😄\nНапиши: создай задачу ..."
+        )
 
     return JSONResponse({"ok": True})
