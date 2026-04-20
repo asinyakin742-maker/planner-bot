@@ -19,7 +19,7 @@ def send_telegram_message(chat_id: int, text: str):
         "chat_id": chat_id,
         "text": text
     }
-    requests.post(url, json=payload)
+    requests.post(url, json=payload, timeout=20)
 
 
 def create_trello_card(title: str):
@@ -28,9 +28,10 @@ def create_trello_card(title: str):
         "key": TRELLO_API_KEY,
         "token": TRELLO_TOKEN,
         "idList": TRELLO_LIST_ID,
-        "name": title
+        "name": title,
+        "desc": title
     }
-    response = requests.post(url, params=query)
+    response = requests.post(url, params=query, timeout=20)
     return response.status_code, response.text
 
 
@@ -65,6 +66,11 @@ async def telegram_webhook(request: Request):
                     chat_id,
                     f"Не удалось создать задачу.\nКод: {status_code}\nОтвет Trello: {response_text}"
                 )
+
+    else:
+        send_telegram_message(chat_id, "Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
+
+    return JSONResponse({"ok": True})
 
     else:
         send_telegram_message(chat_id, "Пока умею создавать задачи 😄\nНапиши: создай задачу ...")
