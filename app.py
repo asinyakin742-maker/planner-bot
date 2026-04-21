@@ -155,6 +155,8 @@ def root():
 async def telegram_webhook(request: Request):
     update = await request.json()
 
+    print(update)
+
     message = update.get("message")
     if not message:
         return JSONResponse({"ok": True})
