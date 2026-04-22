@@ -214,7 +214,7 @@ def handle_registration_message(chat_id: int, text: str):
     return False
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "ok"}
 
