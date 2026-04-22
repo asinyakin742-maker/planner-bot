@@ -29,7 +29,8 @@ class PlannerBotTests(unittest.TestCase):
             "создай задачу\n"
             "название: демо\n"
             "описание: встреча с клиентом\n"
-            "срок: 2026-04-25"
+            "срок: 2026-04-25\n"
+            "ответственный: Иванов Иван"
         )
 
         parsed = app.parse_task_text(text)
@@ -37,6 +38,7 @@ class PlannerBotTests(unittest.TestCase):
         self.assertEqual(parsed["title"], "демо")
         self.assertEqual(parsed["description"], "встреча с клиентом")
         self.assertEqual(parsed["due_date"], "2026-04-25T09:00:00")
+        self.assertEqual(parsed["assignee"], "Иванов Иван")
 
     def test_invalid_due_date(self):
         text = (
@@ -86,6 +88,45 @@ class PlannerBotTests(unittest.TestCase):
             self.assertEqual(saved_users["иванов иван"]["full_name"], "Иванов Иван")
             self.assertEqual(saved_users["иванов иван"]["trello_member_id"], "")
             mock_send_telegram_message.assert_called_once()
+
+    def test_find_user_by_full_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            users_path = Path(temp_dir) / "users.json"
+            users_path.write_text(
+                json.dumps(
+                    {
+                        "иванов иван": {
+                            "full_name": "Иванов Иван",
+                            "telegram_chat_id": 101,
+                            "trello_member_id": "member-1"
+                        }
+                    },
+                    ensure_ascii=False
+                ),
+                encoding="utf-8"
+            )
+
+            with patch.object(app, "USERS_FILE_PATH", users_path):
+                user = app.find_user("Иванов Иван")
+
+        self.assertEqual(user["telegram_chat_id"], 101)
+        self.assertEqual(user["trello_member_id"], "member-1")
+
+    @patch("app.requests.post")
+    def test_create_trello_card_with_member(self, mock_post):
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.text = "ok"
+
+        status_code, response_text = app.create_trello_card(
+            "Задача",
+            "Описание",
+            "2026-04-25T09:00:00",
+            trello_member_id="member-1"
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(response_text, "ok")
+        self.assertEqual(mock_post.call_args.kwargs["params"]["idMembers"], ["member-1"])
 
 
 if __name__ == "__main__":

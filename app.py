@@ -59,6 +59,12 @@ def register_user(full_name: str, chat_id: int):
     return normalized_name
 
 
+def find_user(full_name: str):
+    normalized_name = normalize_user_name(full_name)
+    users = load_users()
+    return users.get(normalized_name)
+
+
 def parse_due_date(raw_due: str):
     """
     Поддерживаем:
@@ -89,7 +95,12 @@ def parse_due_date(raw_due: str):
         return None
 
 
-def create_trello_card(title: str, description: str, due_date: str = None):
+def create_trello_card(
+    title: str,
+    description: str,
+    due_date: str = None,
+    trello_member_id: str = None
+):
     url = "https://api.trello.com/1/cards"
     query = {
         "key": TRELLO_API_KEY,
@@ -101,6 +112,8 @@ def create_trello_card(title: str, description: str, due_date: str = None):
 
     if due_date:
         query["due"] = due_date
+    if trello_member_id:
+        query["idMembers"] = [trello_member_id]
 
     response = requests.post(url, params=query, timeout=20)
     return response.status_code, response.text
@@ -133,12 +146,14 @@ def parse_task_text(text: str):
         return {
             "title": remainder,
             "description": remainder,
-            "due_date": None
+            "due_date": None,
+            "assignee": ""
         }
 
     title = ""
     description = ""
     raw_due = ""
+    assignee = ""
 
     lines = [line.strip() for line in remainder.splitlines() if line.strip()]
 
@@ -151,6 +166,8 @@ def parse_task_text(text: str):
             description = line.split(":", 1)[1].strip()
         elif lowered.startswith("срок:"):
             raw_due = line.split(":", 1)[1].strip()
+        elif lowered.startswith("ответственный:"):
+            assignee = line.split(":", 1)[1].strip()
 
     if not title and not description and not raw_due and remainder:
         fallback_text = " ".join(lines).strip()
@@ -158,7 +175,8 @@ def parse_task_text(text: str):
             return {
                 "title": fallback_text,
                 "description": fallback_text,
-                "due_date": None
+                "due_date": None,
+                "assignee": ""
             }
 
     if title and not description:
@@ -172,13 +190,15 @@ def parse_task_text(text: str):
             return {
                 "title": title,
                 "description": description,
-                "due_date": "INVALID_DATE"
+                "due_date": "INVALID_DATE",
+                "assignee": assignee
             }
 
     return {
         "title": title,
         "description": description,
-        "due_date": due_date
+        "due_date": due_date,
+        "assignee": assignee
     }
 
 
@@ -246,6 +266,7 @@ async def telegram_webhook(request: Request):
         title = parsed_task["title"]
         description = parsed_task["description"]
         due_date = parsed_task["due_date"]
+        assignee_name = parsed_task.get("assignee", "")
 
         if not title:
             send_telegram_message(
@@ -271,14 +292,39 @@ async def telegram_webhook(request: Request):
             )
             return JSONResponse({"ok": True})
 
-        status_code, response_text = create_trello_card(title, description, due_date)
+        assignee = None
+        trello_member_id = None
+        if assignee_name:
+            assignee = find_user(assignee_name)
+
+            if assignee is None:
+                send_telegram_message(
+                    chat_id,
+                    f"Не удалось найти ответственного: {assignee_name}. Пусть он сначала зарегистрируется в боте."
+                )
+                return JSONResponse({"ok": True})
+
+            trello_member_id = assignee.get("trello_member_id") or None
+
+        status_code, response_text = create_trello_card(
+            title,
+            description,
+            due_date,
+            trello_member_id=trello_member_id
+        )
 
         if status_code == 200:
             due_text = due_date if due_date else "не указан"
+            assignee_text = assignee_name if assignee_name else "не указан"
             send_telegram_message(
                 chat_id,
-                f"Задача создана.\nНазвание: {title}\nОписание: {description}\nСрок: {due_text}"
+                f"Задача создана.\nНазвание: {title}\nОписание: {description}\nСрок: {due_text}\nОтветственный: {assignee_text}"
             )
+            if assignee:
+                send_telegram_message(
+                    assignee["telegram_chat_id"],
+                    f"Тебе назначена задача: {title}\nОписание: {description}\nСрок: {due_text}"
+                )
         else:
             send_telegram_message(
                 chat_id,
