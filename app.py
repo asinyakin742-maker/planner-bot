@@ -1,8 +1,11 @@
+import os
+import json
+from datetime import datetime
+from pathlib import Path
+
+import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import requests
-import os
-from datetime import datetime
 
 app = FastAPI()
 
@@ -10,8 +13,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
 TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+USERS_FILE_PATH = Path(os.getenv("USERS_FILE_PATH", "users.json"))
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+PENDING_REGISTRATIONS = set()
 
 
 def send_telegram_message(chat_id: int, text: str):
@@ -21,6 +26,37 @@ def send_telegram_message(chat_id: int, text: str):
         "text": text
     }
     requests.post(url, json=payload, timeout=20)
+
+
+def load_users():
+    if not USERS_FILE_PATH.exists():
+        return {}
+
+    with USERS_FILE_PATH.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def save_users(users: dict):
+    with USERS_FILE_PATH.open("w", encoding="utf-8") as file:
+        json.dump(users, file, ensure_ascii=False, indent=2)
+
+
+def normalize_user_name(name: str):
+    return " ".join(name.strip().lower().split())
+
+
+def register_user(full_name: str, chat_id: int):
+    normalized_name = normalize_user_name(full_name)
+    users = load_users()
+
+    users[normalized_name] = {
+        "full_name": full_name.strip(),
+        "telegram_chat_id": chat_id,
+        "trello_member_id": ""
+    }
+
+    save_users(users)
+    return normalized_name
 
 
 def parse_due_date(raw_due: str):
@@ -146,6 +182,38 @@ def parse_task_text(text: str):
     }
 
 
+def handle_registration_message(chat_id: int, text: str):
+    lowered_text = text.strip().lower()
+
+    if lowered_text == "регистрация":
+        PENDING_REGISTRATIONS.add(chat_id)
+        send_telegram_message(
+            chat_id,
+            "Напиши фамилию и имя, чтобы я сохранил тебя в справочник."
+        )
+        return True
+
+    if chat_id in PENDING_REGISTRATIONS:
+        full_name = text.strip()
+
+        if len(full_name.split()) < 2:
+            send_telegram_message(
+                chat_id,
+                "Нужны фамилия и имя. Пример: Иванов Иван"
+            )
+            return True
+
+        register_user(full_name, chat_id)
+        PENDING_REGISTRATIONS.discard(chat_id)
+        send_telegram_message(
+            chat_id,
+            f"Регистрация завершена: {full_name}. Теперь тебя можно назначать ответственным."
+        )
+        return True
+
+    return False
+
+
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -168,6 +236,9 @@ async def telegram_webhook(request: Request):
 
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
+
+    if handle_registration_message(chat_id, text):
+        return JSONResponse({"ok": True})
 
     parsed_task = parse_task_text(text)
 
