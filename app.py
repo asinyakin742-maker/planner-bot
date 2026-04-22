@@ -151,6 +151,11 @@ def root():
     return {"status": "ok"}
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "planner-bot"}
+
+
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()

@@ -4,6 +4,12 @@ import app
 
 
 class PlannerBotTests(unittest.TestCase):
+    def test_health_endpoint_payload(self):
+        self.assertEqual(
+            app.health(),
+            {"status": "ok", "service": "planner-bot"}
+        )
+
     def test_parse_old_format(self):
         parsed = app.parse_task_text("создай задачу демо")
 
