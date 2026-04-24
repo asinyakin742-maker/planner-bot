@@ -89,6 +89,15 @@ class PlannerBotTests(unittest.TestCase):
             self.assertEqual(saved_users["иванов иван"]["trello_member_id"], "")
             mock_send_telegram_message.assert_called_once()
 
+    @patch.object(app, "GOOGLE_SHEETS_CREDENTIALS_JSON", '{"type":"service_account"}')
+    @patch.object(app, "GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
+    @patch("app.upsert_user_in_sheets")
+    def test_registration_uses_google_sheets_when_configured(self, mock_upsert_user_in_sheets):
+        normalized_name = app.register_user("Иванов Иван", 101)
+
+        self.assertEqual(normalized_name, "иванов иван")
+        mock_upsert_user_in_sheets.assert_called_once_with("Иванов Иван", 101)
+
     def test_find_user_by_full_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             users_path = Path(temp_dir) / "users.json"
@@ -127,6 +136,24 @@ class PlannerBotTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(response_text, "ok")
         self.assertEqual(mock_post.call_args.kwargs["params"]["idMembers"], ["member-1"])
+
+    @patch.object(app, "GOOGLE_SHEETS_CREDENTIALS_JSON", '{"type":"service_account"}')
+    @patch.object(app, "GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
+    @patch("app.get_sheets_service")
+    def test_load_users_from_google_sheets(self, mock_get_sheets_service):
+        mock_service = mock_get_sheets_service.return_value
+        mock_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [
+                ["full_name", "telegram_chat_id", "trello_member_id"],
+                ["Иванов Иван", "101", "member-1"]
+            ]
+        }
+
+        users = app.load_users()
+
+        self.assertEqual(users["иванов иван"]["full_name"], "Иванов Иван")
+        self.assertEqual(users["иванов иван"]["telegram_chat_id"], 101)
+        self.assertEqual(users["иванов иван"]["trello_member_id"], "member-1")
 
 
 if __name__ == "__main__":

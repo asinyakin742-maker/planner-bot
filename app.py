@@ -14,6 +14,9 @@ TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
 TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
 USERS_FILE_PATH = Path(os.getenv("USERS_FILE_PATH", "users.json"))
+GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID")
+GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
+GOOGLE_SHEETS_RANGE = os.getenv("GOOGLE_SHEETS_RANGE", "A:C")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 PENDING_REGISTRATIONS = set()
@@ -28,7 +31,85 @@ def send_telegram_message(chat_id: int, text: str):
     requests.post(url, json=payload, timeout=20)
 
 
+def use_google_sheets():
+    return bool(GOOGLE_SHEETS_SPREADSHEET_ID and GOOGLE_SHEETS_CREDENTIALS_JSON)
+
+
+def get_sheets_service():
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build
+
+    credentials_info = json.loads(GOOGLE_SHEETS_CREDENTIALS_JSON)
+    credentials = Credentials.from_service_account_info(
+        credentials_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
+    return build("sheets", "v4", credentials=credentials)
+
+
+def load_users_from_sheets():
+    service = get_sheets_service()
+    response = service.spreadsheets().values().get(
+        spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
+        range=GOOGLE_SHEETS_RANGE
+    ).execute()
+
+    rows = response.get("values", [])
+    users = {}
+
+    for row in rows[1:]:
+        full_name = row[0].strip() if len(row) > 0 else ""
+        telegram_chat_id = row[1].strip() if len(row) > 1 else ""
+        trello_member_id = row[2].strip() if len(row) > 2 else ""
+
+        if not full_name:
+            continue
+
+        users[normalize_user_name(full_name)] = {
+            "full_name": full_name,
+            "telegram_chat_id": int(telegram_chat_id) if telegram_chat_id else "",
+            "trello_member_id": trello_member_id
+        }
+
+    return users
+
+
+def upsert_user_in_sheets(full_name: str, chat_id: int, trello_member_id: str = ""):
+    service = get_sheets_service()
+    response = service.spreadsheets().values().get(
+        spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
+        range=GOOGLE_SHEETS_RANGE
+    ).execute()
+
+    rows = response.get("values", [])
+    normalized_name = normalize_user_name(full_name)
+    values = [[full_name.strip(), str(chat_id), trello_member_id]]
+
+    for index, row in enumerate(rows[1:], start=2):
+        existing_name = row[0].strip() if len(row) > 0 else ""
+        if normalize_user_name(existing_name) == normalized_name:
+            service.spreadsheets().values().update(
+                spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
+                range=f"A{index}:C{index}",
+                valueInputOption="RAW",
+                body={"values": values}
+            ).execute()
+            return normalized_name
+
+    service.spreadsheets().values().append(
+        spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
+        range=GOOGLE_SHEETS_RANGE,
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values}
+    ).execute()
+    return normalized_name
+
+
 def load_users():
+    if use_google_sheets():
+        return load_users_from_sheets()
+
     if not USERS_FILE_PATH.exists():
         return {}
 
@@ -37,6 +118,9 @@ def load_users():
 
 
 def save_users(users: dict):
+    if use_google_sheets():
+        raise RuntimeError("Use upsert_user_in_sheets when Google Sheets storage is enabled")
+
     with USERS_FILE_PATH.open("w", encoding="utf-8") as file:
         json.dump(users, file, ensure_ascii=False, indent=2)
 
@@ -47,12 +131,16 @@ def normalize_user_name(name: str):
 
 def register_user(full_name: str, chat_id: int):
     normalized_name = normalize_user_name(full_name)
+    if use_google_sheets():
+        return upsert_user_in_sheets(full_name, chat_id)
+
     users = load_users()
+    existing_user = users.get(normalized_name, {})
 
     users[normalized_name] = {
         "full_name": full_name.strip(),
         "telegram_chat_id": chat_id,
-        "trello_member_id": ""
+        "trello_member_id": existing_user.get("trello_member_id", "")
     }
 
     save_users(users)
