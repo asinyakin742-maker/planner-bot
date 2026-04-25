@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import user_store
 
 
 class PlannerBotTests(unittest.TestCase):
@@ -14,7 +15,7 @@ class PlannerBotTests(unittest.TestCase):
     def test_health_endpoint_payload(self):
         self.assertEqual(
             app.health(),
-            {"status": "ok", "service": "planner-bot"}
+            {"status": "ok", "service": "planner-bot"},
         )
 
     def test_parse_old_format(self):
@@ -52,6 +53,62 @@ class PlannerBotTests(unittest.TestCase):
 
         self.assertEqual(parsed["due_date"], "INVALID_DATE")
 
+    def test_find_user_is_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            users_path = Path(temp_dir) / "users.json"
+            users_path.write_text(
+                json.dumps(
+                    {
+                        "иван": {
+                            "trello_member_id": "member-1",
+                            "telegram_chat_id": 12345
+                        }
+                    },
+                    ensure_ascii=False
+                ),
+                encoding="utf-8"
+            )
+
+            with patch.object(app, "USERS_FILE_PATH", users_path):
+                user = app.find_user("ИВАН")
+
+        self.assertEqual(user["trello_member_id"], "member-1")
+        self.assertEqual(user["telegram_chat_id"], 12345)
+
+    def test_build_user_store_defaults_to_json_file(self):
+        store = user_store.build_user_store(Path("users.json"))
+
+        self.assertIsInstance(store, user_store.JsonFileUserStore)
+
+    def test_build_user_store_uses_google_sheets_when_configured(self):
+        store = user_store.build_user_store(
+            Path("users.json"),
+            spreadsheet_id="sheet-id",
+            credentials_json='{"type":"service_account"}',
+        )
+
+        self.assertIsInstance(store, user_store.GoogleSheetsUserStore)
+
+    @patch("user_store.GoogleSheetsUserStore._build_service")
+    def test_google_sheets_user_store_loads_rows(self, mock_build_service):
+        mock_service = mock_build_service.return_value
+        mock_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [
+                ["full_name", "telegram_chat_id", "trello_member_id"],
+                ["Иванов Иван", "12345", "member-1"],
+            ]
+        }
+
+        store = user_store.GoogleSheetsUserStore(
+            "sheet-id",
+            '{"type":"service_account"}',
+        )
+        user = store.find_user("Иванов Иван")
+
+        self.assertEqual(user["full_name"], "Иванов Иван")
+        self.assertEqual(user["telegram_chat_id"], 12345)
+        self.assertEqual(user["trello_member_id"], "member-1")
+
     @patch("app.send_telegram_message")
     def test_registration_starts_on_command(self, mock_send_telegram_message):
         handled = app.handle_registration_message(101, "регистрация")
@@ -71,7 +128,7 @@ class PlannerBotTests(unittest.TestCase):
         mock_send_telegram_message.assert_called_once()
 
     @patch("app.send_telegram_message")
-    def test_registration_saves_user(self, mock_send_telegram_message):
+    def test_registration_saves_user_to_json_store(self, mock_send_telegram_message):
         with tempfile.TemporaryDirectory() as temp_dir:
             users_path = Path(temp_dir) / "users.json"
 
@@ -84,44 +141,94 @@ class PlannerBotTests(unittest.TestCase):
             self.assertNotIn(101, app.PENDING_REGISTRATIONS)
 
             saved_users = json.loads(users_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved_users["иванов иван"]["telegram_chat_id"], 101)
             self.assertEqual(saved_users["иванов иван"]["full_name"], "Иванов Иван")
+            self.assertEqual(saved_users["иванов иван"]["telegram_chat_id"], 101)
             self.assertEqual(saved_users["иванов иван"]["trello_member_id"], "")
             mock_send_telegram_message.assert_called_once()
 
-    @patch.object(app, "GOOGLE_SHEETS_CREDENTIALS_JSON", '{"type":"service_account"}')
-    @patch.object(app, "GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
-    @patch("app.upsert_user_in_sheets")
-    def test_registration_uses_google_sheets_when_configured(self, mock_upsert_user_in_sheets):
-        normalized_name = app.register_user("Иванов Иван", 101)
+    @patch("user_store.GoogleSheetsUserStore._build_service")
+    def test_google_sheets_user_store_upserts_user(self, mock_build_service):
+        mock_service = mock_build_service.return_value
+        mock_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
+            "values": [["full_name", "telegram_chat_id", "trello_member_id"]]
+        }
 
-        self.assertEqual(normalized_name, "иванов иван")
-        mock_upsert_user_in_sheets.assert_called_once_with("Иванов Иван", 101)
+        store = user_store.GoogleSheetsUserStore(
+            "sheet-id",
+            '{"type":"service_account"}',
+        )
+        saved_user = store.upsert_user("Иванов Иван", 12345)
 
-    def test_find_user_by_full_name(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            users_path = Path(temp_dir) / "users.json"
-            users_path.write_text(
-                json.dumps(
-                    {
-                        "иванов иван": {
-                            "full_name": "Иванов Иван",
-                            "telegram_chat_id": 101,
-                            "trello_member_id": "member-1"
-                        }
-                    },
-                    ensure_ascii=False
-                ),
-                encoding="utf-8"
-            )
+        self.assertEqual(saved_user["full_name"], "Иванов Иван")
+        self.assertEqual(saved_user["telegram_chat_id"], 12345)
+        mock_service.spreadsheets.return_value.values.return_value.append.assert_called_once()
 
-            with patch.object(app, "USERS_FILE_PATH", users_path):
-                user = app.find_user("Иванов Иван")
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    def test_process_task_request_reports_missing_assignee(self, mock_create_trello_card, mock_send_telegram_message):
+        parsed_task = {
+            "title": "демо",
+            "description": "встреча",
+            "due_date": "2026-04-25T09:00:00",
+            "assignee": "Иванов Иван",
+        }
 
-        self.assertEqual(user["telegram_chat_id"], 101)
-        self.assertEqual(user["trello_member_id"], "member-1")
+        with patch("app.find_user", return_value=None):
+            app.process_task_request(101, parsed_task)
 
-    @patch("app.requests.post")
+        mock_create_trello_card.assert_not_called()
+        mock_send_telegram_message.assert_called_once()
+
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    def test_process_task_request_creates_task_and_notifies_assignee(self, mock_create_trello_card, mock_send_telegram_message):
+        parsed_task = {
+            "title": "демо",
+            "description": "встреча",
+            "due_date": "2026-04-25T09:00:00",
+            "assignee": "Иванов Иван",
+        }
+        assignee = {
+            "full_name": "Иванов Иван",
+            "telegram_chat_id": 202,
+            "trello_member_id": "member-1",
+        }
+        mock_create_trello_card.return_value = (200, "ok")
+        mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
+
+        with patch("app.find_user", return_value=assignee):
+            app.process_task_request(101, parsed_task)
+
+        mock_create_trello_card.assert_called_once()
+        self.assertEqual(mock_send_telegram_message.call_count, 2)
+
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    def test_process_task_request_reports_failed_assignee_notification(self, mock_create_trello_card, mock_send_telegram_message):
+        parsed_task = {
+            "title": "демо",
+            "description": "встреча",
+            "due_date": "2026-04-25T09:00:00",
+            "assignee": "Иванов Иван",
+        }
+        assignee = {
+            "full_name": "Иванов Иван",
+            "telegram_chat_id": 202,
+            "trello_member_id": "member-1",
+        }
+        mock_create_trello_card.return_value = (200, "ok")
+        mock_send_telegram_message.side_effect = [
+            {"ok": True, "status_code": 200, "body": {"ok": True}},
+            {"ok": False, "status_code": 403, "body": {"ok": False}},
+            {"ok": True, "status_code": 200, "body": {"ok": True}},
+        ]
+
+        with patch("app.find_user", return_value=assignee):
+            app.process_task_request(101, parsed_task)
+
+        self.assertEqual(mock_send_telegram_message.call_count, 3)
+
+    @patch("trello_client.requests.post")
     def test_create_trello_card_with_member(self, mock_post):
         mock_post.return_value.status_code = 200
         mock_post.return_value.text = "ok"
@@ -136,25 +243,3 @@ class PlannerBotTests(unittest.TestCase):
         self.assertEqual(status_code, 200)
         self.assertEqual(response_text, "ok")
         self.assertEqual(mock_post.call_args.kwargs["params"]["idMembers"], ["member-1"])
-
-    @patch.object(app, "GOOGLE_SHEETS_CREDENTIALS_JSON", '{"type":"service_account"}')
-    @patch.object(app, "GOOGLE_SHEETS_SPREADSHEET_ID", "sheet-id")
-    @patch("app.get_sheets_service")
-    def test_load_users_from_google_sheets(self, mock_get_sheets_service):
-        mock_service = mock_get_sheets_service.return_value
-        mock_service.spreadsheets.return_value.values.return_value.get.return_value.execute.return_value = {
-            "values": [
-                ["full_name", "telegram_chat_id", "trello_member_id"],
-                ["Иванов Иван", "101", "member-1"]
-            ]
-        }
-
-        users = app.load_users()
-
-        self.assertEqual(users["иванов иван"]["full_name"], "Иванов Иван")
-        self.assertEqual(users["иванов иван"]["telegram_chat_id"], 101)
-        self.assertEqual(users["иванов иван"]["trello_member_id"], "member-1")
-
-
-if __name__ == "__main__":
-    unittest.main()
