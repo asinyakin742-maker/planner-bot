@@ -223,8 +223,13 @@ def health():
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     update = await request.json()
-
-    print(update)
+    logger.info(
+        "Received Telegram update",
+        extra={
+            "update_id": update.get("update_id"),
+            "has_message": bool(update.get("message")),
+        },
+    )
 
     message = update.get("message")
     if not message:

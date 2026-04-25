@@ -7,11 +7,13 @@ from unittest.mock import patch
 import app
 import telegram_client
 import user_store
+from fastapi.testclient import TestClient
 
 
 class PlannerBotTests(unittest.TestCase):
     def setUp(self):
         app.PENDING_REGISTRATIONS.clear()
+        self.client = TestClient(app.app)
 
     def test_health_endpoint_payload(self):
         self.assertEqual(
@@ -302,3 +304,91 @@ class PlannerBotTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIsNone(result["status_code"])
+
+    def test_webhook_ignores_updates_without_message(self):
+        response = self.client.post("/webhook", json={"update_id": 1})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+
+    @patch("app.send_telegram_message")
+    def test_webhook_registration_flow_persists_user(self, mock_send_telegram_message):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            users_path = Path(temp_dir) / "users.json"
+
+            with patch.object(app, "USERS_FILE_PATH", users_path):
+                first_response = self.client.post(
+                    "/webhook",
+                    json={
+                        "update_id": 1001,
+                        "message": {
+                            "chat": {"id": 101},
+                            "text": "регистрация",
+                        },
+                    },
+                )
+                second_response = self.client.post(
+                    "/webhook",
+                    json={
+                        "update_id": 1002,
+                        "message": {
+                            "chat": {"id": 101},
+                            "text": "Иванов Иван",
+                        },
+                    },
+                )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        saved_users = json.loads(users_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved_users["иванов иван"]["telegram_chat_id"], 101)
+        self.assertEqual(mock_send_telegram_message.call_count, 2)
+
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    @patch("app.find_user")
+    def test_webhook_task_creation_flow_notifies_manager_and_assignee(
+        self,
+        mock_find_user,
+        mock_create_trello_card,
+        mock_send_telegram_message,
+    ):
+        mock_find_user.return_value = {
+            "full_name": "Иванов Иван",
+            "telegram_chat_id": 202,
+            "trello_member_id": "member-1",
+        }
+        mock_create_trello_card.return_value = {
+            "ok": True,
+            "status_code": 200,
+            "body": {"id": "card-1"},
+            "error": "",
+        }
+        mock_send_telegram_message.return_value = {
+            "ok": True,
+            "status_code": 200,
+            "body": {"ok": True},
+            "error": "",
+        }
+
+        response = self.client.post(
+            "/webhook",
+            json={
+                "update_id": 2001,
+                "message": {
+                    "chat": {"id": 101},
+                    "text": (
+                        "создай задачу\n"
+                        "название: тест\n"
+                        "описание: проверка\n"
+                        "срок: 2026-04-25\n"
+                        "ответственный: Иванов Иван"
+                    ),
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_find_user.assert_called_once_with("Иванов Иван")
+        mock_create_trello_card.assert_called_once()
+        self.assertEqual(mock_send_telegram_message.call_count, 2)

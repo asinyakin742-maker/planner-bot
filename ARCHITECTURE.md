@@ -47,3 +47,24 @@ The service is being refactored in phases:
 3. Introduce a storage adapter interface.
 4. Implement Google Sheets as the source of truth for users.
 5. Add registration and assignment tests before adding more features.
+
+## Current Production State
+
+- Telegram webhook is active on Render.
+- User directory is stored in Google Sheets when the related env vars are configured.
+- Registration flow is active:
+  - user sends `регистрация`
+  - bot asks for full name
+  - bot stores `full_name` and `telegram_chat_id`
+- Assignment flow is active:
+  - manager sends a task with `ответственный:`
+  - service looks up the employee
+  - service creates a Trello card
+  - service sends a Telegram notification to the assignee
+
+## Operational Rules
+
+- Render secrets are the source of truth for API credentials.
+- Google Sheets is the source of truth for employees.
+- `users.json` remains only a local fallback for development.
+- Production changes should be shipped phase by phase, with smoke tests after each deploy.

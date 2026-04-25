@@ -25,6 +25,10 @@ This repository is the template for a simple service workflow:
    - `TRELLO_API_KEY`
    - `TRELLO_TOKEN`
    - `TRELLO_LIST_ID`
+   - if using Google Sheets:
+     - `GOOGLE_SHEETS_SPREADSHEET_ID`
+     - `GOOGLE_SHEETS_CREDENTIALS_JSON`
+     - `GOOGLE_SHEETS_RANGE`
 
 ## Daily commands
 
@@ -32,6 +36,19 @@ This repository is the template for a simple service workflow:
   `uvicorn app:app --reload`
 - Run tests:
   `python -m unittest discover -s tests -v`
+
+## Smoke Test After Deploy
+
+1. Check `/health`
+2. Verify registration flow:
+   - send `регистрация`
+   - send `Фамилия Имя`
+3. Verify task creation with a missing assignee
+4. Verify task creation with a registered assignee
+5. Confirm:
+   - Google Sheets row exists
+   - Trello card exists
+   - Telegram notification arrives
 
 ## Release flow
 
@@ -46,5 +63,6 @@ This repository is the template for a simple service workflow:
 ## Notes
 
 - Do not store secrets in the repository.
-- Keep `users.json` local only.
+- Use Google Sheets as the production employee directory.
+- Keep `users.json` local only as a fallback for development.
 - Use this repository structure as the starting point for future services.

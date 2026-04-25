@@ -5,6 +5,7 @@ Telegram planner bot on FastAPI with Trello integration.
 ## What this repository now includes
 
 - app code in `app.py`
+- modular bot architecture (`parser.py`, `telegram_client.py`, `trello_client.py`, `user_store.py`)
 - basic regression tests in `tests/`
 - GitHub Actions CI in `.github/workflows/ci.yml`
 - local workflow guide in `WORKFLOW.md`
@@ -20,10 +21,30 @@ Telegram planner bot on FastAPI with Trello integration.
    - `TRELLO_API_KEY`
    - `TRELLO_TOKEN`
    - `TRELLO_LIST_ID`
+   - optional local fallback: `USERS_FILE_PATH`
+   - for Google Sheets production storage:
+     - `GOOGLE_SHEETS_SPREADSHEET_ID`
+     - `GOOGLE_SHEETS_CREDENTIALS_JSON`
+     - `GOOGLE_SHEETS_RANGE`
 4. Run locally:
    `uvicorn app:app --reload`
 5. Run tests:
    `python -m unittest discover -s tests -v`
+
+## Supported Bot Flows
+
+- Registration:
+  - user sends `регистрация`
+  - bot asks for full name
+  - bot stores `full_name` and `telegram_chat_id`
+- Task creation:
+  - old format: `создай задачу демо`
+  - structured format:
+    - `создай задачу`
+    - `название: ...`
+    - `описание: ...`
+    - `срок: ...`
+    - `ответственный: ...`
 
 ## Delivery flow
 
