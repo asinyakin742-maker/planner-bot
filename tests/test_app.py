@@ -204,7 +204,10 @@ class PlannerBotTests(unittest.TestCase):
         }
         mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
 
-        with patch("app.find_user", return_value=assignee):
+        with patch("app.find_user", return_value=assignee), patch(
+            "app.sync_trello_assignee_metadata",
+            return_value={"ok": True, "skipped": False},
+        ):
             app.process_task_request(101, parsed_task)
 
         mock_create_trello_card.assert_called_once()
@@ -236,7 +239,10 @@ class PlannerBotTests(unittest.TestCase):
             {"ok": True, "status_code": 200, "body": {"ok": True}},
         ]
 
-        with patch("app.find_user", return_value=assignee):
+        with patch("app.find_user", return_value=assignee), patch(
+            "app.sync_trello_assignee_metadata",
+            return_value={"ok": True, "skipped": False},
+        ):
             app.process_task_request(101, parsed_task)
 
         self.assertEqual(mock_send_telegram_message.call_count, 3)
@@ -256,6 +262,50 @@ class PlannerBotTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(mock_post.call_args.kwargs["params"]["idMembers"], ["member-1"])
+
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    def test_process_task_request_reports_failed_trello_metadata_sync(self, mock_create_trello_card, mock_send_telegram_message):
+        parsed_task = {
+            "title": "демо",
+            "description": "встреча",
+            "due_date": "2026-04-25T09:00:00",
+            "assignee": "Иванов Иван",
+        }
+        assignee = {
+            "full_name": "Иванов Иван",
+            "telegram_chat_id": 202,
+            "trello_member_id": "",
+        }
+        mock_create_trello_card.return_value = {
+            "ok": True,
+            "status_code": 200,
+            "body": {"id": "card-1"},
+            "error": "",
+        }
+        mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
+
+        with patch("app.find_user", return_value=assignee), patch(
+            "app.sync_trello_assignee_metadata",
+            return_value={"ok": False, "skipped": False, "error": "boom"},
+        ):
+            app.process_task_request(101, parsed_task)
+
+        self.assertEqual(mock_send_telegram_message.call_count, 3)
+
+    @patch("trello_client.requests.put")
+    def test_set_trello_card_text_custom_field(self, mock_put):
+        mock_put.return_value.status_code = 200
+        mock_put.return_value.json.return_value = {"idCustomField": "field-1"}
+
+        result = app.set_trello_card_text_custom_field("card-1", "field-1", "Иванов Иван")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(
+            mock_put.call_args.kwargs["json"]["value"]["text"],
+            "Иванов Иван",
+        )
 
     @patch("app.send_telegram_message")
     def test_registration_reports_storage_failure(self, mock_send_telegram_message):
@@ -371,22 +421,26 @@ class PlannerBotTests(unittest.TestCase):
             "error": "",
         }
 
-        response = self.client.post(
-            "/webhook",
-            json={
-                "update_id": 2001,
-                "message": {
-                    "chat": {"id": 101},
-                    "text": (
-                        "создай задачу\n"
-                        "название: тест\n"
-                        "описание: проверка\n"
-                        "срок: 2026-04-25\n"
-                        "ответственный: Иванов Иван"
-                    ),
+        with patch(
+            "app.sync_trello_assignee_metadata",
+            return_value={"ok": True, "skipped": False},
+        ):
+            response = self.client.post(
+                "/webhook",
+                json={
+                    "update_id": 2001,
+                    "message": {
+                        "chat": {"id": 101},
+                        "text": (
+                            "создай задачу\n"
+                            "название: тест\n"
+                            "описание: проверка\n"
+                            "срок: 2026-04-25\n"
+                            "ответственный: Иванов Иван"
+                        ),
+                    },
                 },
-            },
-        )
+            )
 
         self.assertEqual(response.status_code, 200)
         mock_find_user.assert_called_once_with("Иванов Иван")

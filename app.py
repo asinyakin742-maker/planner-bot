@@ -17,6 +17,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
 TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID = os.getenv("TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID", "").strip()
+TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID = os.getenv("TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID", "").strip()
 USERS_FILE_PATH = Path(os.getenv("USERS_FILE_PATH", "users.json"))
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
@@ -63,6 +65,16 @@ def create_trello_card(
         description,
         due_date,
         trello_member_id,
+    )
+
+
+def set_trello_card_text_custom_field(card_id: str, custom_field_id: str, value: str):
+    return trello_client.set_card_text_custom_field(
+        TRELLO_API_KEY,
+        TRELLO_TOKEN,
+        card_id,
+        custom_field_id,
+        value,
     )
 
 
@@ -119,6 +131,45 @@ def notify_assignee(assignee: dict, title: str, description: str, due_text: str)
         assignee["telegram_chat_id"],
         f"Тебе назначена задача: {title}\nОписание: {description}\nСрок: {due_text}",
     )
+
+
+def sync_trello_assignee_metadata(assignee: dict, card_id: str):
+    if not assignee or not card_id:
+        return {"ok": True, "skipped": True}
+
+    if not TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID or not TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID:
+        logger.warning("Trello custom field ids are not configured")
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": "Trello custom field ids are not configured",
+        }
+
+    full_name_result = set_trello_card_text_custom_field(
+        card_id,
+        TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID,
+        assignee["full_name"],
+    )
+    if not full_name_result["ok"]:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": f"Failed to write assignee full name: {full_name_result['error'] or full_name_result['body']}",
+        }
+
+    chat_id_result = set_trello_card_text_custom_field(
+        card_id,
+        TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID,
+        str(assignee["telegram_chat_id"]),
+    )
+    if not chat_id_result["ok"]:
+        return {
+            "ok": False,
+            "skipped": False,
+            "error": f"Failed to write assignee chat id: {chat_id_result['error'] or chat_id_result['body']}",
+        }
+
+    return {"ok": True, "skipped": False}
 
 
 def process_task_request(chat_id: int, parsed_task: dict):
@@ -185,6 +236,21 @@ def process_task_request(chat_id: int, parsed_task: dict):
         )
         return
 
+    card_id = ""
+    if isinstance(trello_result.get("body"), dict):
+        card_id = trello_result["body"].get("id", "")
+
+    assignee_sync_result = sync_trello_assignee_metadata(assignee, card_id)
+    if assignee and not assignee_sync_result["ok"]:
+        logger.warning(
+            "Failed to sync Trello assignee metadata",
+            extra={
+                "assignee_name": assignee_name,
+                "card_id": card_id,
+                "error": assignee_sync_result.get("error"),
+            },
+        )
+
     due_text = due_date if due_date else "не указан"
     assignee_text = assignee_name if assignee_name else "не указан"
     send_telegram_message(
@@ -207,6 +273,12 @@ def process_task_request(chat_id: int, parsed_task: dict):
         send_telegram_message(
             chat_id,
             f"Задача создана, но уведомление ответственному не доставлено: {assignee_name}.",
+        )
+
+    if assignee and not assignee_sync_result["ok"]:
+        send_telegram_message(
+            chat_id,
+            f"Задача создана, но данные ответственного не записаны в Trello для будущих напоминаний: {assignee_name}.",
         )
 
 
