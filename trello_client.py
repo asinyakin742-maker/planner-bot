@@ -113,7 +113,43 @@ def get_list_cards(
         "key": api_key,
         "token": token,
         "fields": "id,name,due,idList",
-        "customFieldItems": "true",
+    }
+
+    try:
+        response = requests.get(url, params=query, timeout=20)
+    except requests.RequestException as exc:
+        return _build_result(False, status_code=None, body=None, error=str(exc))
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+
+    if response.status_code != 200:
+        return _build_result(
+            False,
+            status_code=response.status_code,
+            body=body,
+            error=response.text,
+        )
+
+    return _build_result(
+        True,
+        status_code=response.status_code,
+        body=body,
+        error="",
+    )
+
+
+def get_card_custom_field_items(
+    api_key: str,
+    token: str,
+    card_id: str,
+):
+    url = f"https://api.trello.com/1/cards/{card_id}/customFieldItems"
+    query = {
+        "key": api_key,
+        "token": token,
     }
 
     try:

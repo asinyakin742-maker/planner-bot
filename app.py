@@ -99,6 +99,14 @@ def add_trello_card_comment(card_id: str, text: str):
     )
 
 
+def get_trello_card_custom_field_items(card_id: str):
+    return trello_client.get_card_custom_field_items(
+        TRELLO_API_KEY,
+        TRELLO_TOKEN,
+        card_id,
+    )
+
+
 def parse_task_text(text: str):
     return task_parser.parse_task_text(text)
 
@@ -239,12 +247,23 @@ def send_due_reminders(now_msk: datetime | None = None):
             skipped += 1
             continue
 
-        chat_id = extract_card_text_custom_field(card, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
+        custom_fields_result = get_trello_card_custom_field_items(card["id"])
+        if not custom_fields_result.get("ok"):
+            logger.warning(
+                "Failed to load card custom fields for due reminder",
+                extra={"card_id": card.get("id"), "result": custom_fields_result},
+            )
+            skipped += 1
+            continue
+
+        card_with_fields = dict(card)
+        card_with_fields["customFieldItems"] = custom_fields_result.get("body", [])
+        chat_id = extract_card_text_custom_field(card_with_fields, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
         if not chat_id:
             skipped += 1
             continue
 
-        reminder_result = send_telegram_message(int(chat_id), build_due_reminder_text(card))
+        reminder_result = send_telegram_message(int(chat_id), build_due_reminder_text(card_with_fields))
         if not reminder_result.get("ok"):
             logger.warning(
                 "Failed to send due reminder",
@@ -286,12 +305,23 @@ def send_weekly_reminders(now_msk: datetime | None = None):
             skipped += 1
             continue
 
-        chat_id = extract_card_text_custom_field(card, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
+        custom_fields_result = get_trello_card_custom_field_items(card["id"])
+        if not custom_fields_result.get("ok"):
+            logger.warning(
+                "Failed to load card custom fields for weekly reminder",
+                extra={"card_id": card.get("id"), "result": custom_fields_result},
+            )
+            skipped += 1
+            continue
+
+        card_with_fields = dict(card)
+        card_with_fields["customFieldItems"] = custom_fields_result.get("body", [])
+        chat_id = extract_card_text_custom_field(card_with_fields, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
         if not chat_id:
             skipped += 1
             continue
 
-        reminder_result = send_telegram_message(int(chat_id), build_weekly_reminder_text(card))
+        reminder_result = send_telegram_message(int(chat_id), build_weekly_reminder_text(card_with_fields))
         if not reminder_result.get("ok"):
             logger.warning(
                 "Failed to send weekly reminder",
