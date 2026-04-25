@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app
+import telegram_client
 import user_store
 
 
@@ -193,7 +194,12 @@ class PlannerBotTests(unittest.TestCase):
             "telegram_chat_id": 202,
             "trello_member_id": "member-1",
         }
-        mock_create_trello_card.return_value = (200, "ok")
+        mock_create_trello_card.return_value = {
+            "ok": True,
+            "status_code": 200,
+            "body": {"id": "card-1"},
+            "error": "",
+        }
         mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
 
         with patch("app.find_user", return_value=assignee):
@@ -216,7 +222,12 @@ class PlannerBotTests(unittest.TestCase):
             "telegram_chat_id": 202,
             "trello_member_id": "member-1",
         }
-        mock_create_trello_card.return_value = (200, "ok")
+        mock_create_trello_card.return_value = {
+            "ok": True,
+            "status_code": 200,
+            "body": {"id": "card-1"},
+            "error": "",
+        }
         mock_send_telegram_message.side_effect = [
             {"ok": True, "status_code": 200, "body": {"ok": True}},
             {"ok": False, "status_code": 403, "body": {"ok": False}},
@@ -231,15 +242,63 @@ class PlannerBotTests(unittest.TestCase):
     @patch("trello_client.requests.post")
     def test_create_trello_card_with_member(self, mock_post):
         mock_post.return_value.status_code = 200
-        mock_post.return_value.text = "ok"
+        mock_post.return_value.json.return_value = {"id": "card-1"}
 
-        status_code, response_text = app.create_trello_card(
+        result = app.create_trello_card(
             "Задача",
             "Описание",
             "2026-04-25T09:00:00",
             trello_member_id="member-1"
         )
 
-        self.assertEqual(status_code, 200)
-        self.assertEqual(response_text, "ok")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status_code"], 200)
         self.assertEqual(mock_post.call_args.kwargs["params"]["idMembers"], ["member-1"])
+
+    @patch("app.send_telegram_message")
+    def test_registration_reports_storage_failure(self, mock_send_telegram_message):
+        app.PENDING_REGISTRATIONS.add(101)
+
+        with patch("app.register_user", side_effect=RuntimeError("boom")):
+            handled = app.handle_registration_message(101, "Иванов Иван")
+
+        self.assertTrue(handled)
+        self.assertIn(101, app.PENDING_REGISTRATIONS)
+        self.assertEqual(mock_send_telegram_message.call_count, 1)
+
+    @patch("app.send_telegram_message")
+    @patch("app.create_trello_card")
+    def test_process_task_request_reports_user_store_failure(self, mock_create_trello_card, mock_send_telegram_message):
+        parsed_task = {
+            "title": "демо",
+            "description": "встреча",
+            "due_date": "2026-04-25T09:00:00",
+            "assignee": "Иванов Иван",
+        }
+
+        with patch("app.find_user", side_effect=RuntimeError("boom")):
+            app.process_task_request(101, parsed_task)
+
+        mock_create_trello_card.assert_not_called()
+        mock_send_telegram_message.assert_called_once()
+
+    @patch("telegram_client.requests.post")
+    def test_send_telegram_message_reports_api_error(self, mock_post):
+        mock_post.return_value.status_code = 403
+        mock_post.return_value.json.return_value = {"ok": False, "description": "bot was blocked by the user"}
+        mock_post.return_value.text = '{"ok": false}'
+
+        result = telegram_client.send_telegram_message("https://api.telegram.org/bot123", 101, "hi")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status_code"], 403)
+
+    @patch(
+        "telegram_client.requests.post",
+        side_effect=telegram_client.requests.RequestException("boom"),
+    )
+    def test_send_telegram_message_reports_transport_error(self, mock_post):
+        result = telegram_client.send_telegram_message("https://api.telegram.org/bot123", 101, "hi")
+
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["status_code"])

@@ -91,7 +91,16 @@ def handle_registration_message(chat_id: int, text: str):
             )
             return True
 
-        register_user(full_name, chat_id)
+        try:
+            register_user(full_name, chat_id)
+        except Exception:
+            logger.exception("Failed to register user", extra={"chat_id": chat_id, "full_name": full_name})
+            send_telegram_message(
+                chat_id,
+                "Не удалось завершить регистрацию. Попробуй еще раз чуть позже.",
+            )
+            return True
+
         PENDING_REGISTRATIONS.discard(chat_id)
         send_telegram_message(
             chat_id,
@@ -142,7 +151,16 @@ def process_task_request(chat_id: int, parsed_task: dict):
         )
         return
 
-    assignee = find_user(assignee_name) if assignee_name else None
+    try:
+        assignee = find_user(assignee_name) if assignee_name else None
+    except Exception:
+        logger.exception("Failed to load assignee from user store", extra={"assignee_name": assignee_name})
+        send_telegram_message(
+            chat_id,
+            "Не удалось проверить справочник сотрудников. Попробуй еще раз чуть позже.",
+        )
+        return
+
     if assignee_name and assignee is None:
         send_telegram_message(
             chat_id,
@@ -151,17 +169,19 @@ def process_task_request(chat_id: int, parsed_task: dict):
         return
 
     trello_member_id = assignee.get("trello_member_id") if assignee else None
-    status_code, response_text = create_trello_card(
+    trello_result = create_trello_card(
         title,
         description,
         due_date,
         trello_member_id=trello_member_id,
     )
 
-    if status_code != 200:
+    if not trello_result["ok"]:
         send_telegram_message(
             chat_id,
-            f"Не удалось создать задачу.\nКод: {status_code}\nОтвет Trello: {response_text}",
+            f"Не удалось создать задачу.\n"
+            f"Код: {trello_result['status_code']}\n"
+            f"Ответ Trello: {trello_result['error'] or trello_result['body']}",
         )
         return
 
@@ -174,6 +194,16 @@ def process_task_request(chat_id: int, parsed_task: dict):
 
     assignee_delivery = notify_assignee(assignee, title, description, due_text)
     if assignee and assignee_delivery and not assignee_delivery.get("ok"):
+        logger.warning(
+            "Failed to notify assignee",
+            extra={
+                "assignee_name": assignee_name,
+                "telegram_chat_id": assignee.get("telegram_chat_id"),
+                "telegram_status_code": assignee_delivery.get("status_code"),
+                "telegram_error": assignee_delivery.get("error"),
+                "telegram_body": assignee_delivery.get("body"),
+            },
+        )
         send_telegram_message(
             chat_id,
             f"Задача создана, но уведомление ответственному не доставлено: {assignee_name}.",

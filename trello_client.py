@@ -1,6 +1,15 @@
 import requests
 
 
+def _build_result(ok: bool, status_code=None, body=None, error: str = ""):
+    return {
+        "ok": ok,
+        "status_code": status_code,
+        "body": body,
+        "error": error,
+    }
+
+
 def create_trello_card(
     api_key: str,
     token: str,
@@ -24,5 +33,27 @@ def create_trello_card(
     if trello_member_id:
         query["idMembers"] = [trello_member_id]
 
-    response = requests.post(url, params=query, timeout=20)
-    return response.status_code, response.text
+    try:
+        response = requests.post(url, params=query, timeout=20)
+    except requests.RequestException as exc:
+        return _build_result(False, status_code=None, body=None, error=str(exc))
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+
+    if response.status_code != 200:
+        return _build_result(
+            False,
+            status_code=response.status_code,
+            body=body,
+            error=response.text,
+        )
+
+    return _build_result(
+        True,
+        status_code=response.status_code,
+        body=body,
+        error="",
+    )

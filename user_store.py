@@ -65,19 +65,33 @@ class GoogleSheetsUserStore:
         from google.oauth2.service_account import Credentials
         from googleapiclient.discovery import build
 
-        credentials_info = json.loads(self.credentials_json)
-        credentials = Credentials.from_service_account_info(
-            credentials_info,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"],
-        )
-        return build("sheets", "v4", credentials=credentials)
+        try:
+            credentials_info = json.loads(self.credentials_json)
+            credentials = Credentials.from_service_account_info(
+                credentials_info,
+                scopes=["https://www.googleapis.com/auth/spreadsheets"],
+            )
+            return build("sheets", "v4", credentials=credentials)
+        except Exception:
+            logger.exception("Failed to build Google Sheets service")
+            raise
 
     def load_users(self):
-        service = self._build_service()
-        response = service.spreadsheets().values().get(
-            spreadsheetId=self.spreadsheet_id,
-            range=self.cell_range,
-        ).execute()
+        try:
+            service = self._build_service()
+            response = service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=self.cell_range,
+            ).execute()
+        except Exception:
+            logger.exception(
+                "Failed to load users from Google Sheets",
+                extra={
+                    "spreadsheet_id": self.spreadsheet_id,
+                    "cell_range": self.cell_range,
+                },
+            )
+            raise
 
         rows = response.get("values", [])
         if not rows:
@@ -108,11 +122,22 @@ class GoogleSheetsUserStore:
         return users.get(normalize_user_name(raw_name))
 
     def upsert_user(self, full_name: str, telegram_chat_id: int, trello_member_id: str = ""):
-        service = self._build_service()
-        response = service.spreadsheets().values().get(
-            spreadsheetId=self.spreadsheet_id,
-            range=self.cell_range,
-        ).execute()
+        try:
+            service = self._build_service()
+            response = service.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=self.cell_range,
+            ).execute()
+        except Exception:
+            logger.exception(
+                "Failed to prepare Google Sheets upsert",
+                extra={
+                    "spreadsheet_id": self.spreadsheet_id,
+                    "cell_range": self.cell_range,
+                    "full_name": full_name.strip(),
+                },
+            )
+            raise
 
         rows = response.get("values", [])
         normalized_name = normalize_user_name(full_name)
@@ -121,25 +146,47 @@ class GoogleSheetsUserStore:
         for index, row in enumerate(rows[1:], start=2):
             existing_name = row[0].strip() if len(row) > 0 else ""
             if normalize_user_name(existing_name) == normalized_name:
-                service.spreadsheets().values().update(
-                    spreadsheetId=self.spreadsheet_id,
-                    range=f"A{index}:C{index}",
-                    valueInputOption="RAW",
-                    body={"values": values},
-                ).execute()
+                try:
+                    service.spreadsheets().values().update(
+                        spreadsheetId=self.spreadsheet_id,
+                        range=f"A{index}:C{index}",
+                        valueInputOption="RAW",
+                        body={"values": values},
+                    ).execute()
+                except Exception:
+                    logger.exception(
+                        "Failed to update user in Google Sheets",
+                        extra={
+                            "spreadsheet_id": self.spreadsheet_id,
+                            "row": index,
+                            "full_name": full_name.strip(),
+                        },
+                    )
+                    raise
                 return {
                     "full_name": full_name.strip(),
                     "telegram_chat_id": telegram_chat_id,
                     "trello_member_id": trello_member_id,
                 }
 
-        service.spreadsheets().values().append(
-            spreadsheetId=self.spreadsheet_id,
-            range=self.cell_range,
-            valueInputOption="RAW",
-            insertDataOption="INSERT_ROWS",
-            body={"values": values},
-        ).execute()
+        try:
+            service.spreadsheets().values().append(
+                spreadsheetId=self.spreadsheet_id,
+                range=self.cell_range,
+                valueInputOption="RAW",
+                insertDataOption="INSERT_ROWS",
+                body={"values": values},
+            ).execute()
+        except Exception:
+            logger.exception(
+                "Failed to append user to Google Sheets",
+                extra={
+                    "spreadsheet_id": self.spreadsheet_id,
+                    "cell_range": self.cell_range,
+                    "full_name": full_name.strip(),
+                },
+            )
+            raise
 
         return {
             "full_name": full_name.strip(),
