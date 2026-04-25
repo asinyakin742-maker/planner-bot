@@ -8,6 +8,7 @@ import app
 import telegram_client
 import user_store
 from fastapi.testclient import TestClient
+from zoneinfo import ZoneInfo
 
 
 class PlannerBotTests(unittest.TestCase):
@@ -446,3 +447,99 @@ class PlannerBotTests(unittest.TestCase):
         mock_find_user.assert_called_once_with("Иванов Иван")
         mock_create_trello_card.assert_called_once()
         self.assertEqual(mock_send_telegram_message.call_count, 2)
+
+    def test_extract_card_text_custom_field(self):
+        card = {
+            "customFieldItems": [
+                {
+                    "idCustomField": "field-1",
+                    "value": {"text": "Иванов Иван"},
+                }
+            ]
+        }
+
+        value = app.extract_card_text_custom_field(card, "field-1")
+
+        self.assertEqual(value, "Иванов Иван")
+
+    def test_is_due_today(self):
+        now_msk = app.datetime(2026, 4, 27, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+        card = {"due": "2026-04-27T09:00:00+03:00"}
+
+        self.assertTrue(app.is_due_today(card, now_msk))
+
+    def test_is_due_this_week(self):
+        now_msk = app.datetime(2026, 4, 27, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+        card = {"due": "2026-04-29T09:00:00+03:00"}
+
+        self.assertTrue(app.is_due_this_week(card, now_msk))
+
+    @patch("app.add_trello_card_comment")
+    @patch("app.send_telegram_message")
+    @patch("app.get_trello_open_cards")
+    def test_send_due_reminders(self, mock_get_cards, mock_send_telegram_message, mock_add_trello_card_comment):
+        mock_get_cards.return_value = {
+            "ok": True,
+            "body": [
+                {
+                    "id": "card-1",
+                    "name": "Тест today",
+                    "due": "2026-04-27T09:00:00+03:00",
+                    "customFieldItems": [
+                        {
+                            "idCustomField": app.TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID,
+                            "value": {"text": "202"},
+                        }
+                    ],
+                }
+            ],
+            "error": "",
+        }
+        mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
+        mock_add_trello_card_comment.return_value = {"ok": True, "status_code": 200, "body": {"id": "comment-1"}}
+
+        with patch.object(app, "TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID", "field-chat-id"):
+            mock_get_cards.return_value["body"][0]["customFieldItems"][0]["idCustomField"] = "field-chat-id"
+            result = app.send_due_reminders(
+                app.datetime(2026, 4, 27, 10, 0, tzinfo=ZoneInfo("Europe/Moscow"))
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sent"], 1)
+        mock_send_telegram_message.assert_called_once()
+        mock_add_trello_card_comment.assert_called_once()
+
+    @patch("app.add_trello_card_comment")
+    @patch("app.send_telegram_message")
+    @patch("app.get_trello_open_cards")
+    def test_send_weekly_reminders(self, mock_get_cards, mock_send_telegram_message, mock_add_trello_card_comment):
+        mock_get_cards.return_value = {
+            "ok": True,
+            "body": [
+                {
+                    "id": "card-1",
+                    "name": "Тест week",
+                    "due": "2026-04-29T09:00:00+03:00",
+                    "customFieldItems": [
+                        {
+                            "idCustomField": app.TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID,
+                            "value": {"text": "202"},
+                        }
+                    ],
+                }
+            ],
+            "error": "",
+        }
+        mock_send_telegram_message.return_value = {"ok": True, "status_code": 200, "body": {"ok": True}}
+        mock_add_trello_card_comment.return_value = {"ok": True, "status_code": 200, "body": {"id": "comment-1"}}
+
+        with patch.object(app, "TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID", "field-chat-id"):
+            mock_get_cards.return_value["body"][0]["customFieldItems"][0]["idCustomField"] = "field-chat-id"
+            result = app.send_weekly_reminders(
+                app.datetime(2026, 4, 27, 9, 30, tzinfo=ZoneInfo("Europe/Moscow"))
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["sent"], 1)
+        mock_send_telegram_message.assert_called_once()
+        mock_add_trello_card_comment.assert_called_once()

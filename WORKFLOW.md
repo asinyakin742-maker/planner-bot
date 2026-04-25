@@ -25,6 +25,9 @@ This repository is the template for a simple service workflow:
    - `TRELLO_API_KEY`
    - `TRELLO_TOKEN`
    - `TRELLO_LIST_ID`
+   - `TRELLO_OPEN_LIST_ID`
+   - `TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID`
+   - `TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID`
    - if using Google Sheets:
      - `GOOGLE_SHEETS_SPREADSHEET_ID`
      - `GOOGLE_SHEETS_CREDENTIALS_JSON`
@@ -36,6 +39,10 @@ This repository is the template for a simple service workflow:
   `uvicorn app:app --reload`
 - Run tests:
   `python -m unittest discover -s tests -v`
+- Run due reminders manually:
+  `POST /jobs/reminders/due`
+- Run weekly reminders manually:
+  `POST /jobs/reminders/weekly`
 
 ## Smoke Test After Deploy
 
@@ -49,6 +56,10 @@ This repository is the template for a simple service workflow:
    - Google Sheets row exists
    - Trello card exists
    - Telegram notification arrives
+6. If reminder flow changed:
+   - call `/jobs/reminders/due` or `/jobs/reminders/weekly`
+   - confirm Telegram reminder arrives
+   - confirm a Trello comment is added to the card
 
 ## Release flow
 

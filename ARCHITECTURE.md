@@ -61,6 +61,11 @@ The service is being refactored in phases:
   - service looks up the employee
   - service creates a Trello card
   - service sends a Telegram notification to the assignee
+- Reminder flow is now designed around Trello as the task registry:
+  - active tasks live in list `Open`
+  - assignee Telegram metadata is stored in Trello custom fields
+  - reminder jobs read cards from `Open`
+  - after sending a reminder, the service writes a comment to the card
 
 ## Operational Rules
 

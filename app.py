@@ -1,6 +1,8 @@
 import logging
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -17,12 +19,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TRELLO_API_KEY = os.getenv("TRELLO_API_KEY")
 TRELLO_TOKEN = os.getenv("TRELLO_TOKEN")
 TRELLO_LIST_ID = os.getenv("TRELLO_LIST_ID")
+TRELLO_OPEN_LIST_ID = os.getenv("TRELLO_OPEN_LIST_ID", "").strip()
 TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID = os.getenv("TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID", "").strip()
 TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID = os.getenv("TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID", "").strip()
 USERS_FILE_PATH = Path(os.getenv("USERS_FILE_PATH", "users.json"))
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
 GOOGLE_SHEETS_RANGE = os.getenv("GOOGLE_SHEETS_RANGE", "A:C").strip()
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 PENDING_REGISTRATIONS = set()
@@ -75,6 +79,23 @@ def set_trello_card_text_custom_field(card_id: str, custom_field_id: str, value:
         card_id,
         custom_field_id,
         value,
+    )
+
+
+def get_trello_open_cards():
+    return trello_client.get_list_cards(
+        TRELLO_API_KEY,
+        TRELLO_TOKEN,
+        TRELLO_OPEN_LIST_ID,
+    )
+
+
+def add_trello_card_comment(card_id: str, text: str):
+    return trello_client.add_card_comment(
+        TRELLO_API_KEY,
+        TRELLO_TOKEN,
+        card_id,
+        text,
     )
 
 
@@ -131,6 +152,167 @@ def notify_assignee(assignee: dict, title: str, description: str, due_text: str)
         assignee["telegram_chat_id"],
         f"Тебе назначена задача: {title}\nОписание: {description}\nСрок: {due_text}",
     )
+
+
+def parse_trello_due_date(raw_due: str):
+    if not raw_due:
+        return None
+
+    normalized = raw_due.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=MOSCOW_TZ)
+
+    return parsed.astimezone(MOSCOW_TZ)
+
+
+def extract_card_text_custom_field(card: dict, custom_field_id: str):
+    if not custom_field_id:
+        return ""
+
+    for item in card.get("customFieldItems", []):
+        if item.get("idCustomField") != custom_field_id:
+            continue
+
+        value = item.get("value", {})
+        return value.get("text", "")
+
+    return ""
+
+
+def get_current_moscow_time():
+    return datetime.now(MOSCOW_TZ)
+
+
+def is_due_today(card: dict, now_msk: datetime):
+    due = parse_trello_due_date(card.get("due"))
+    if due is None:
+        return False
+    return due.date() == now_msk.date()
+
+
+def is_due_this_week(card: dict, now_msk: datetime):
+    due = parse_trello_due_date(card.get("due"))
+    if due is None:
+        return False
+
+    week_start = now_msk.date() - timedelta(days=now_msk.weekday())
+    week_end = week_start + timedelta(days=6)
+    return week_start <= due.date() <= week_end
+
+
+def build_due_reminder_text(card: dict):
+    due = parse_trello_due_date(card.get("due"))
+    due_text = due.strftime("%d.%m %H:%M") if due else "не указан"
+    return f"Напоминание по задаче на сегодня: {card['name']}\nСрок: {due_text}"
+
+
+def build_weekly_reminder_text(card: dict):
+    due = parse_trello_due_date(card.get("due"))
+    due_text = due.strftime("%d.%m %H:%M") if due else "не указан"
+    return f"Напоминание по задаче этой недели: {card['name']}\nСрок: {due_text}"
+
+
+def build_reminder_comment(reminder_kind: str, now_msk: datetime):
+    human_time = now_msk.strftime("%Y-%m-%d %H:%M Europe/Moscow")
+    if reminder_kind == "due":
+        return f"[planner-bot] {human_time}: отправлено напоминание в день срока исполнителю."
+    return f"[planner-bot] {human_time}: отправлено недельное напоминание исполнителю."
+
+
+def send_due_reminders(now_msk: datetime | None = None):
+    now_msk = now_msk or get_current_moscow_time()
+    cards_result = get_trello_open_cards()
+    if not cards_result["ok"]:
+        return {
+            "ok": False,
+            "error": cards_result["error"] or cards_result["body"],
+            "sent": 0,
+        }
+
+    sent = 0
+    skipped = 0
+
+    for card in cards_result.get("body", []):
+        if not is_due_today(card, now_msk):
+            skipped += 1
+            continue
+
+        chat_id = extract_card_text_custom_field(card, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
+        if not chat_id:
+            skipped += 1
+            continue
+
+        reminder_result = send_telegram_message(int(chat_id), build_due_reminder_text(card))
+        if not reminder_result.get("ok"):
+            logger.warning(
+                "Failed to send due reminder",
+                extra={"card_id": card.get("id"), "chat_id": chat_id, "result": reminder_result},
+            )
+            skipped += 1
+            continue
+
+        comment_result = add_trello_card_comment(
+            card["id"],
+            build_reminder_comment("due", now_msk),
+        )
+        if not comment_result.get("ok"):
+            logger.warning(
+                "Failed to write due reminder comment",
+                extra={"card_id": card.get("id"), "result": comment_result},
+            )
+
+        sent += 1
+
+    return {"ok": True, "sent": sent, "skipped": skipped}
+
+
+def send_weekly_reminders(now_msk: datetime | None = None):
+    now_msk = now_msk or get_current_moscow_time()
+    cards_result = get_trello_open_cards()
+    if not cards_result["ok"]:
+        return {
+            "ok": False,
+            "error": cards_result["error"] or cards_result["body"],
+            "sent": 0,
+        }
+
+    sent = 0
+    skipped = 0
+
+    for card in cards_result.get("body", []):
+        if not is_due_this_week(card, now_msk):
+            skipped += 1
+            continue
+
+        chat_id = extract_card_text_custom_field(card, TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID)
+        if not chat_id:
+            skipped += 1
+            continue
+
+        reminder_result = send_telegram_message(int(chat_id), build_weekly_reminder_text(card))
+        if not reminder_result.get("ok"):
+            logger.warning(
+                "Failed to send weekly reminder",
+                extra={"card_id": card.get("id"), "chat_id": chat_id, "result": reminder_result},
+            )
+            skipped += 1
+            continue
+
+        comment_result = add_trello_card_comment(
+            card["id"],
+            build_reminder_comment("weekly", now_msk),
+        )
+        if not comment_result.get("ok"):
+            logger.warning(
+                "Failed to write weekly reminder comment",
+                extra={"card_id": card.get("id"), "result": comment_result},
+            )
+
+        sent += 1
+
+    return {"ok": True, "sent": sent, "skipped": skipped}
 
 
 def sync_trello_assignee_metadata(assignee: dict, card_id: str):
@@ -290,6 +472,16 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "planner-bot"}
+
+
+@app.post("/jobs/reminders/due")
+def run_due_reminders():
+    return send_due_reminders()
+
+
+@app.post("/jobs/reminders/weekly")
+def run_weekly_reminders():
+    return send_weekly_reminders()
 
 
 @app.post("/webhook")

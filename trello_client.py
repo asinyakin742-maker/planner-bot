@@ -101,3 +101,81 @@ def set_card_text_custom_field(
         body=body,
         error="",
     )
+
+
+def get_list_cards(
+    api_key: str,
+    token: str,
+    list_id: str,
+):
+    url = f"https://api.trello.com/1/lists/{list_id}/cards"
+    query = {
+        "key": api_key,
+        "token": token,
+        "fields": "id,name,due,idList",
+        "customFieldItems": "true",
+    }
+
+    try:
+        response = requests.get(url, params=query, timeout=20)
+    except requests.RequestException as exc:
+        return _build_result(False, status_code=None, body=None, error=str(exc))
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+
+    if response.status_code != 200:
+        return _build_result(
+            False,
+            status_code=response.status_code,
+            body=body,
+            error=response.text,
+        )
+
+    return _build_result(
+        True,
+        status_code=response.status_code,
+        body=body,
+        error="",
+    )
+
+
+def add_card_comment(
+    api_key: str,
+    token: str,
+    card_id: str,
+    text: str,
+):
+    url = f"https://api.trello.com/1/cards/{card_id}/actions/comments"
+    query = {
+        "key": api_key,
+        "token": token,
+        "text": text,
+    }
+
+    try:
+        response = requests.post(url, params=query, timeout=20)
+    except requests.RequestException as exc:
+        return _build_result(False, status_code=None, body=None, error=str(exc))
+
+    try:
+        body = response.json()
+    except ValueError:
+        body = response.text
+
+    if response.status_code != 200:
+        return _build_result(
+            False,
+            status_code=response.status_code,
+            body=body,
+            error=response.text,
+        )
+
+    return _build_result(
+        True,
+        status_code=response.status_code,
+        body=body,
+        error="",
+    )

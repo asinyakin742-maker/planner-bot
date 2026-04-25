@@ -21,6 +21,9 @@ Telegram planner bot on FastAPI with Trello integration.
    - `TRELLO_API_KEY`
    - `TRELLO_TOKEN`
    - `TRELLO_LIST_ID`
+   - `TRELLO_OPEN_LIST_ID`
+   - `TRELLO_ASSIGNEE_FULL_NAME_FIELD_ID`
+   - `TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID`
    - optional local fallback: `USERS_FILE_PATH`
    - for Google Sheets production storage:
      - `GOOGLE_SHEETS_SPREADSHEET_ID`
@@ -45,6 +48,9 @@ Telegram planner bot on FastAPI with Trello integration.
     - `описание: ...`
     - `срок: ...`
     - `ответственный: ...`
+- Manual reminder jobs:
+  - `POST /jobs/reminders/due`
+  - `POST /jobs/reminders/weekly`
 
 ## Delivery flow
 
