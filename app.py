@@ -180,7 +180,11 @@ def handle_ai_clarification(chat_id: int, text: str):
 
     result = continue_task_text_with_ai(current_draft, text)
     if not result["ok"]:
-        logger.warning("AI clarification parsing failed", extra={"chat_id": chat_id, "error": result["error"]})
+        logger.warning(
+            "AI clarification parsing failed for chat_id=%s: %s",
+            chat_id,
+            result["error"],
+        )
         send_telegram_message(
             chat_id,
             "Не удалось обработать уточнение. Попробуй переформулировать сообщение или используй строгий формат.",
@@ -210,7 +214,11 @@ def handle_ai_task_request(chat_id: int, text: str):
 
     result = parse_task_text_with_ai(text)
     if not result["ok"]:
-        logger.warning("AI parsing failed", extra={"chat_id": chat_id, "error": result["error"]})
+        logger.warning(
+            "AI parsing failed for chat_id=%s: %s",
+            chat_id,
+            result["error"],
+        )
         return False
 
     draft = result["draft"]
