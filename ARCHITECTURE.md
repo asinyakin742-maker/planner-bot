@@ -66,6 +66,10 @@ The service is being refactored in phases:
   - assignee Telegram metadata is stored in Trello custom fields
   - reminder jobs read cards from `Open`
   - after sending a reminder, the service writes a comment to the card
+- AI parsing flow is available when OpenAI env vars are configured:
+  - strict parser is tried first
+  - then OpenAI extracts a structured task draft from free text
+  - if key fields are missing, the bot asks a clarification question
 
 ## Operational Rules
 

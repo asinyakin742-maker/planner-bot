@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 class PlannerBotTests(unittest.TestCase):
     def setUp(self):
         app.PENDING_REGISTRATIONS.clear()
+        app.PENDING_AI_DRAFTS.clear()
         self.client = TestClient(app.app)
 
     def test_health_endpoint_payload(self):
@@ -447,6 +448,95 @@ class PlannerBotTests(unittest.TestCase):
         mock_find_user.assert_called_once_with("Иванов Иван")
         mock_create_trello_card.assert_called_once()
         self.assertEqual(mock_send_telegram_message.call_count, 2)
+
+    @patch("app.process_task_request")
+    @patch("app.parse_task_text_with_ai")
+    def test_handle_ai_task_request_creates_task(self, mock_parse_task_text_with_ai, mock_process_task_request):
+        mock_parse_task_text_with_ai.return_value = {
+            "ok": True,
+            "draft": {
+                "is_task_request": True,
+                "title": "Подготовить демо",
+                "description": "Подготовить демо для клиента",
+                "due_date": "2026-04-30",
+                "assignee": "Иванов Иван",
+                "missing_fields": [],
+                "needs_clarification": False,
+                "clarification_question": "",
+                "quality_warnings": [],
+            },
+            "error": "",
+        }
+
+        with patch.object(app, "OPENAI_API_KEY", "test-key"), patch.object(app, "OPENAI_MODEL", "gpt-4.1-mini"):
+            handled = app.handle_ai_task_request(101, "Поставь Иванову задачу подготовить демо к 30 апреля")
+
+        self.assertTrue(handled)
+        mock_process_task_request.assert_called_once()
+
+    @patch("app.send_telegram_message")
+    @patch("app.parse_task_text_with_ai")
+    def test_handle_ai_task_request_asks_for_clarification(self, mock_parse_task_text_with_ai, mock_send_telegram_message):
+        mock_parse_task_text_with_ai.return_value = {
+            "ok": True,
+            "draft": {
+                "is_task_request": True,
+                "title": "Подготовить демо",
+                "description": "Подготовить демо",
+                "due_date": "",
+                "assignee": "Иванов Иван",
+                "missing_fields": ["due_date"],
+                "needs_clarification": True,
+                "clarification_question": "Не вижу срок задачи. Напиши дедлайн, пожалуйста.",
+                "quality_warnings": [],
+            },
+            "error": "",
+        }
+
+        with patch.object(app, "OPENAI_API_KEY", "test-key"), patch.object(app, "OPENAI_MODEL", "gpt-4.1-mini"):
+            handled = app.handle_ai_task_request(101, "Поставь Иванову задачу подготовить демо")
+
+        self.assertTrue(handled)
+        self.assertIn(101, app.PENDING_AI_DRAFTS)
+        mock_send_telegram_message.assert_called_once()
+
+    @patch("app.send_telegram_message")
+    @patch("app.process_task_request")
+    @patch("app.continue_task_text_with_ai")
+    def test_handle_ai_clarification_completes_draft(self, mock_continue_task_text_with_ai, mock_process_task_request, mock_send_telegram_message):
+        app.PENDING_AI_DRAFTS[101] = {
+            "is_task_request": True,
+            "title": "Подготовить демо",
+            "description": "Подготовить демо",
+            "due_date": "",
+            "assignee": "Иванов Иван",
+            "missing_fields": ["due_date"],
+            "needs_clarification": True,
+            "clarification_question": "Не вижу срок задачи. Напиши дедлайн, пожалуйста.",
+            "quality_warnings": [],
+        }
+        mock_continue_task_text_with_ai.return_value = {
+            "ok": True,
+            "draft": {
+                "is_task_request": True,
+                "title": "Подготовить демо",
+                "description": "Подготовить демо",
+                "due_date": "2026-04-30",
+                "assignee": "Иванов Иван",
+                "missing_fields": [],
+                "needs_clarification": False,
+                "clarification_question": "",
+                "quality_warnings": [],
+            },
+            "error": "",
+        }
+
+        handled = app.handle_ai_clarification(101, "Срок 30 апреля")
+
+        self.assertTrue(handled)
+        self.assertNotIn(101, app.PENDING_AI_DRAFTS)
+        mock_process_task_request.assert_called_once()
+        mock_send_telegram_message.assert_not_called()
 
     def test_extract_card_text_custom_field(self):
         card = {

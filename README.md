@@ -26,9 +26,12 @@ Telegram planner bot on FastAPI with Trello integration.
    - `TRELLO_ASSIGNEE_CHAT_ID_FIELD_ID`
    - optional local fallback: `USERS_FILE_PATH`
    - for Google Sheets production storage:
-     - `GOOGLE_SHEETS_SPREADSHEET_ID`
-     - `GOOGLE_SHEETS_CREDENTIALS_JSON`
-     - `GOOGLE_SHEETS_RANGE`
+   - `GOOGLE_SHEETS_SPREADSHEET_ID`
+   - `GOOGLE_SHEETS_CREDENTIALS_JSON`
+   - `GOOGLE_SHEETS_RANGE`
+   - for AI parsing:
+     - `OPENAI_API_KEY`
+     - `OPENAI_MODEL`
 4. Run locally:
    `uvicorn app:app --reload`
 5. Run tests:
@@ -48,6 +51,9 @@ Telegram planner bot on FastAPI with Trello integration.
     - `описание: ...`
     - `срок: ...`
     - `ответственный: ...`
+  - free-text AI format:
+    - `Поставь Иванову задачу подготовить демо к пятнице`
+    - `Нужно, чтобы Ирина до 30 апреля отправила клиенту КП`
 - Manual reminder jobs:
   - `POST /jobs/reminders/due`
   - `POST /jobs/reminders/weekly`

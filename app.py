@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import ai_parser
 import parser as task_parser
 import telegram_client
 import trello_client
@@ -26,10 +27,13 @@ USERS_FILE_PATH = Path(os.getenv("USERS_FILE_PATH", "users.json"))
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip()
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
 GOOGLE_SHEETS_RANGE = os.getenv("GOOGLE_SHEETS_RANGE", "A:C").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 PENDING_REGISTRATIONS = set()
+PENDING_AI_DRAFTS = {}
 
 
 def get_user_store():
@@ -109,6 +113,123 @@ def get_trello_card_custom_field_items(card_id: str):
 
 def parse_task_text(text: str):
     return task_parser.parse_task_text(text)
+
+
+def ai_parsing_enabled():
+    return bool(OPENAI_API_KEY and OPENAI_MODEL)
+
+
+def parse_task_text_with_ai(text: str):
+    return ai_parser.parse_task_request(
+        OPENAI_API_KEY,
+        OPENAI_MODEL,
+        text,
+        get_current_moscow_time().date(),
+    )
+
+
+def continue_task_text_with_ai(current_draft: dict, clarification_text: str):
+    return ai_parser.continue_task_request(
+        OPENAI_API_KEY,
+        OPENAI_MODEL,
+        current_draft,
+        clarification_text,
+        get_current_moscow_time().date(),
+    )
+
+
+def normalize_ai_draft(draft: dict):
+    title = draft.get("title", "").strip()
+    description = draft.get("description", "").strip() or title
+    due_text = draft.get("due_date", "").strip()
+    assignee = draft.get("assignee", "").strip()
+    due_date = None
+
+    if due_text:
+        due_date = task_parser.parse_due_date(due_text)
+        if due_date is None:
+            due_date = "INVALID_DATE"
+
+    return {
+        "title": title,
+        "description": description,
+        "due_date": due_date,
+        "assignee": assignee,
+    }
+
+
+def send_ai_help_or_fallback(chat_id: int):
+    send_telegram_message(
+        chat_id,
+        "Пока умею создавать задачи.\n\n"
+        "Можно писать свободным текстом, например:\n"
+        "Поставь Иванову задачу подготовить демо к пятнице\n\n"
+        "Или использовать строгий формат:\n"
+        "создай задачу\n"
+        "название: новое демо\n"
+        "описание: демо для клиента Почта\n"
+        "срок: 25.04\n"
+        "ответственный: Иванов Иван",
+    )
+
+
+def handle_ai_clarification(chat_id: int, text: str):
+    current_draft = PENDING_AI_DRAFTS.get(chat_id)
+    if not current_draft:
+        return False
+
+    result = continue_task_text_with_ai(current_draft, text)
+    if not result["ok"]:
+        logger.warning("AI clarification parsing failed", extra={"chat_id": chat_id, "error": result["error"]})
+        send_telegram_message(
+            chat_id,
+            "Не удалось обработать уточнение. Попробуй переформулировать сообщение или используй строгий формат.",
+        )
+        return True
+
+    draft = result["draft"]
+    if draft.get("needs_clarification") or draft.get("missing_fields"):
+        PENDING_AI_DRAFTS[chat_id] = draft
+        question = draft.get("clarification_question") or "Нужно уточнение по задаче."
+        send_telegram_message(chat_id, question)
+        return True
+
+    PENDING_AI_DRAFTS.pop(chat_id, None)
+    parsed_task = normalize_ai_draft(draft)
+    process_task_request(chat_id, parsed_task)
+
+    warnings = draft.get("quality_warnings", [])
+    if warnings:
+        send_telegram_message(chat_id, "Подсказка по формулировке: " + "; ".join(warnings))
+    return True
+
+
+def handle_ai_task_request(chat_id: int, text: str):
+    if not ai_parsing_enabled():
+        return False
+
+    result = parse_task_text_with_ai(text)
+    if not result["ok"]:
+        logger.warning("AI parsing failed", extra={"chat_id": chat_id, "error": result["error"]})
+        return False
+
+    draft = result["draft"]
+    if not draft.get("is_task_request"):
+        return False
+
+    if draft.get("needs_clarification") or draft.get("missing_fields"):
+        PENDING_AI_DRAFTS[chat_id] = draft
+        question = draft.get("clarification_question") or "Нужно уточнение по задаче."
+        send_telegram_message(chat_id, question)
+        return True
+
+    parsed_task = normalize_ai_draft(draft)
+    process_task_request(chat_id, parsed_task)
+
+    warnings = draft.get("quality_warnings", [])
+    if warnings:
+        send_telegram_message(chat_id, "Подсказка по формулировке: " + "; ".join(warnings))
+    return True
 
 
 def handle_registration_message(chat_id: int, text: str):
@@ -535,21 +656,16 @@ async def telegram_webhook(request: Request):
     if handle_registration_message(chat_id, text):
         return JSONResponse({"ok": True})
 
+    if handle_ai_clarification(chat_id, text):
+        return JSONResponse({"ok": True})
+
     parsed_task = parse_task_text(text)
 
     if parsed_task is not None:
         process_task_request(chat_id, parsed_task)
+    elif handle_ai_task_request(chat_id, text):
+        return JSONResponse({"ok": True})
     else:
-        send_telegram_message(
-            chat_id,
-            "Пока умею создавать задачи.\n\n"
-            "Формат 1:\n"
-            "создай задачу новое демо\n\n"
-            "Формат 2:\n"
-            "создай задачу\n"
-            "название: новое демо\n"
-            "описание: демо для клиента Почта\n"
-            "срок: 25.04",
-        )
+        send_ai_help_or_fallback(chat_id)
 
     return JSONResponse({"ok": True})

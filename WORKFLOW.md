@@ -32,6 +32,9 @@ This repository is the template for a simple service workflow:
      - `GOOGLE_SHEETS_SPREADSHEET_ID`
      - `GOOGLE_SHEETS_CREDENTIALS_JSON`
      - `GOOGLE_SHEETS_RANGE`
+   - if using AI parsing:
+     - `OPENAI_API_KEY`
+     - `OPENAI_MODEL`
 
 ## Daily commands
 
@@ -60,6 +63,9 @@ This repository is the template for a simple service workflow:
    - call `/jobs/reminders/due` or `/jobs/reminders/weekly`
    - confirm Telegram reminder arrives
    - confirm a Trello comment is added to the card
+7. If AI parsing changed:
+   - send a free-text task in Telegram
+   - verify task extraction or clarification question
 
 ## Release flow
 
