@@ -536,6 +536,43 @@ class PlannerBotTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertNotIn(101, app.PENDING_AI_DRAFTS)
         mock_process_task_request.assert_called_once()
+
+    def test_prepare_ai_task_payload_resolves_partial_assignee(self):
+        draft = {
+            "title": "Подготовить демо для Почты",
+            "description": "",
+            "due_date": "2026-05-01",
+            "assignee": "Иванову",
+        }
+
+        with patch("app.find_user", return_value=None), patch(
+            "app.load_all_users",
+            return_value={
+                "иванов иван": {
+                    "full_name": "Иванов Иван",
+                    "telegram_chat_id": 101,
+                    "trello_member_id": "",
+                }
+            },
+        ):
+            prepared = app.prepare_ai_task_payload(draft)
+
+        self.assertTrue(prepared["ok"])
+        self.assertEqual(prepared["parsed_task"]["assignee"], "Иванов Иван")
+        self.assertEqual(prepared["parsed_task"]["description"], "Подготовить демо для Почты")
+
+    def test_prepare_ai_task_payload_requires_due_date(self):
+        draft = {
+            "title": "Подготовить демо для Почты",
+            "description": "",
+            "due_date": "",
+            "assignee": "Иванов Иван",
+        }
+
+        prepared = app.prepare_ai_task_payload(draft)
+
+        self.assertFalse(prepared["ok"])
+        self.assertIn("срок", prepared["message"].lower())
         mock_send_telegram_message.assert_not_called()
 
     def test_extract_card_text_custom_field(self):

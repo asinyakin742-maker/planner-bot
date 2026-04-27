@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -52,6 +53,11 @@ def send_telegram_message(chat_id: int, text: str):
 def find_user(raw_name: str):
     store = get_user_store()
     return store.find_user(raw_name)
+
+
+def load_all_users():
+    store = get_user_store()
+    return store.load_users()
 
 
 def register_user(full_name: str, telegram_chat_id: int):
@@ -158,6 +164,108 @@ def normalize_ai_draft(draft: dict):
     }
 
 
+def normalize_person_token(token: str):
+    cleaned = re.sub(r"[^a-zA-Zа-яА-ЯёЁ-]", "", token.strip().lower())
+    if len(cleaned) <= 3:
+        return cleaned
+
+    for suffix in ("ому", "ему", "ого", "его", "ыми", "ими", "ой", "ей", "ом", "ем", "ам", "ям", "ах", "ях", "у", "ю", "а", "я", "е", "ы", "и"):
+        if cleaned.endswith(suffix) and len(cleaned) - len(suffix) >= 3:
+            return cleaned[: -len(suffix)]
+    return cleaned
+
+
+def tokenize_person_name(raw_name: str):
+    tokens = []
+    for token in raw_name.split():
+        normalized = normalize_person_token(token)
+        if normalized:
+            tokens.append(normalized)
+    return tokens
+
+
+def resolve_assignee_candidate(raw_name: str):
+    if not raw_name:
+        return {"status": "missing", "user": None, "matches": []}
+
+    exact_user = find_user(raw_name)
+    if exact_user:
+        return {"status": "resolved", "user": exact_user, "matches": [exact_user]}
+
+    users = load_all_users()
+    query_tokens = tokenize_person_name(raw_name)
+    if not query_tokens:
+        return {"status": "missing", "user": None, "matches": []}
+
+    matches = []
+    for user in users.values():
+        candidate_tokens = tokenize_person_name(user.get("full_name", ""))
+        if not candidate_tokens:
+            continue
+
+        if all(any(candidate.startswith(query) for candidate in candidate_tokens) for query in query_tokens):
+            matches.append(user)
+
+    unique_matches = []
+    seen = set()
+    for user in matches:
+        full_name = user.get("full_name", "")
+        if full_name in seen:
+            continue
+        seen.add(full_name)
+        unique_matches.append(user)
+
+    if len(unique_matches) == 1:
+        return {"status": "resolved", "user": unique_matches[0], "matches": unique_matches}
+    if len(unique_matches) > 1:
+        return {"status": "ambiguous", "user": None, "matches": unique_matches}
+    return {"status": "missing", "user": None, "matches": []}
+
+
+def build_assignee_clarification_text(match_result: dict):
+    if match_result["status"] == "ambiguous":
+        names = ", ".join(user["full_name"] for user in match_result["matches"][:5])
+        return f"Нашел несколько сотрудников с похожим именем: {names}. Кого назначить ответственным?"
+    return "Не удалось понять, кого назначить ответственным. Напиши фамилию и имя исполнителя."
+
+
+def prepare_ai_task_payload(draft: dict):
+    parsed_task = normalize_ai_draft(draft)
+    title = parsed_task["title"].strip()
+    description = parsed_task["description"].strip() or title
+    due_date = parsed_task["due_date"]
+    assignee_text = parsed_task["assignee"].strip()
+
+    if not title:
+        return {
+            "ok": False,
+            "message": "Не удалось собрать понятное название задачи. Сформулируй, пожалуйста, саму задачу короче и конкретнее.",
+        }
+
+    if not due_date or due_date == "INVALID_DATE":
+        return {
+            "ok": False,
+            "message": "Не вижу срок задачи. Напиши, пожалуйста, дедлайн.",
+        }
+
+    assignee_result = resolve_assignee_candidate(assignee_text)
+    if assignee_result["status"] != "resolved":
+        return {
+            "ok": False,
+            "message": build_assignee_clarification_text(assignee_result),
+        }
+
+    return {
+        "ok": True,
+        "parsed_task": {
+            "title": title,
+            "description": description,
+            "due_date": due_date,
+            "assignee": assignee_result["user"]["full_name"],
+        },
+    }
+
+
 def send_ai_help_or_fallback(chat_id: int):
     send_telegram_message(
         chat_id,
@@ -233,6 +341,85 @@ def handle_ai_task_request(chat_id: int, text: str):
 
     parsed_task = normalize_ai_draft(draft)
     process_task_request(chat_id, parsed_task)
+
+    warnings = draft.get("quality_warnings", [])
+    if warnings:
+        send_telegram_message(chat_id, "Подсказка по формулировке: " + "; ".join(warnings))
+    return True
+
+
+def handle_ai_clarification_v2(chat_id: int, text: str):
+    current_draft = PENDING_AI_DRAFTS.get(chat_id)
+    if not current_draft:
+        return False
+
+    result = continue_task_text_with_ai(current_draft, text)
+    if not result["ok"]:
+        logger.warning(
+            "AI clarification parsing failed for chat_id=%s: %s",
+            chat_id,
+            result["error"],
+        )
+        send_telegram_message(
+            chat_id,
+            "Не удалось обработать уточнение. Попробуй переформулировать сообщение или используй строгий формат.",
+        )
+        return True
+
+    draft = result["draft"]
+    blocking_missing_fields = [field for field in draft.get("missing_fields", []) if field in {"title", "due_date", "assignee"}]
+    if draft.get("needs_clarification") or blocking_missing_fields:
+        PENDING_AI_DRAFTS[chat_id] = draft
+        question = draft.get("clarification_question") or "Нужно уточнение по задаче."
+        send_telegram_message(chat_id, question)
+        return True
+
+    prepared = prepare_ai_task_payload(draft)
+    if not prepared["ok"]:
+        PENDING_AI_DRAFTS[chat_id] = draft
+        send_telegram_message(chat_id, prepared["message"])
+        return True
+
+    PENDING_AI_DRAFTS.pop(chat_id, None)
+    process_task_request(chat_id, prepared["parsed_task"])
+
+    warnings = draft.get("quality_warnings", [])
+    if warnings:
+        send_telegram_message(chat_id, "Подсказка по формулировке: " + "; ".join(warnings))
+    return True
+
+
+def handle_ai_task_request_v2(chat_id: int, text: str):
+    if not ai_parsing_enabled():
+        return False
+
+    result = parse_task_text_with_ai(text)
+    if not result["ok"]:
+        logger.warning(
+            "AI parsing failed for chat_id=%s: %s",
+            chat_id,
+            result["error"],
+        )
+        return False
+
+    draft = result["draft"]
+    if not draft.get("is_task_request"):
+        return False
+
+    blocking_missing_fields = [field for field in draft.get("missing_fields", []) if field in {"title", "due_date", "assignee"}]
+    if draft.get("needs_clarification") or blocking_missing_fields:
+        PENDING_AI_DRAFTS[chat_id] = draft
+        question = draft.get("clarification_question") or "Нужно уточнение по задаче."
+        send_telegram_message(chat_id, question)
+        return True
+
+    prepared = prepare_ai_task_payload(draft)
+    if not prepared["ok"]:
+        PENDING_AI_DRAFTS[chat_id] = draft
+        send_telegram_message(chat_id, prepared["message"])
+        return True
+
+    process_task_request(chat_id, prepared["parsed_task"])
 
     warnings = draft.get("quality_warnings", [])
     if warnings:
@@ -664,14 +851,14 @@ async def telegram_webhook(request: Request):
     if handle_registration_message(chat_id, text):
         return JSONResponse({"ok": True})
 
-    if handle_ai_clarification(chat_id, text):
+    if handle_ai_clarification_v2(chat_id, text):
         return JSONResponse({"ok": True})
 
     parsed_task = parse_task_text(text)
 
     if parsed_task is not None:
         process_task_request(chat_id, parsed_task)
-    elif handle_ai_task_request(chat_id, text):
+    elif handle_ai_task_request_v2(chat_id, text):
         return JSONResponse({"ok": True})
     else:
         send_ai_help_or_fallback(chat_id)
